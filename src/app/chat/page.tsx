@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import ChatInterface from '@/components/chat-interface';
 import UploadForm from '@/components/upload-form';
-import { Loader2, FileText, Plus } from 'lucide-react';
+import { Loader2, FileText, Plus, Trash2 } from 'lucide-react';
 import {
   ResizableHandle,
   ResizablePanel,
@@ -11,6 +11,9 @@ import {
 } from '@/components/ui/resizable';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
+import { auth, db } from '@/lib/firebase';
+import { onAuthStateChanged, signInAnonymously, User } from 'firebase/auth';
+import { collection, doc, getDocs, setDoc, writeBatch } from 'firebase/firestore';
 
 export interface PDFDoc {
   id: string;
@@ -30,34 +33,50 @@ export default function ChatPage() {
   const [docs, setDocs] = useState<PDFDoc[]>([]);
   const [activeDocId, setActiveDocId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  
-  useEffect(() => {
-    try {
-      const storedDocs = localStorage.getItem('pdfDocs');
-      const allDocs: PDFDoc[] = storedDocs ? JSON.parse(storedDocs) : [];
-      setDocs(allDocs);
+  const [user, setUser] = useState<User | null>(null);
 
-      const storedActiveId = localStorage.getItem('activePdfId');
-      if (storedActiveId && allDocs.some(d => d.id === storedActiveId)) {
-        setActiveDocId(storedActiveId);
-      } else if (allDocs.length > 0) {
-        const newActiveId = allDocs[0].id;
-        setActiveDocId(newActiveId);
-        localStorage.setItem('activePdfId', newActiveId);
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+        await fetchDocs(currentUser.uid);
+      } else {
+        await signInAnonymously(auth);
       }
-    } catch (error) {
-        console.error("Failed to parse docs from localStorage", error);
-        localStorage.removeItem('pdfDocs');
-        localStorage.removeItem('activePdfId');
-    }
-    setIsLoading(false);
+      setIsLoading(false);
+    });
+    return () => unsubscribe();
   }, []);
 
-  const handleUploadSuccess = (newDoc: PDFDoc) => {
+  const fetchDocs = async (userId: string) => {
+    try {
+      const docsCollectionRef = collection(db, 'users', userId, 'docs');
+      const querySnapshot = await getDocs(docsCollectionRef);
+      const allDocs: PDFDoc[] = querySnapshot.docs.map(docSnap => docSnap.data() as PDFDoc);
+      setDocs(allDocs);
+
+      if (allDocs.length > 0) {
+        const storedActiveId = localStorage.getItem('activePdfId');
+        if (storedActiveId && allDocs.some(d => d.id === storedActiveId)) {
+          setActiveDocId(storedActiveId);
+        } else {
+          setActiveDocId(allDocs[0].id);
+          localStorage.setItem('activePdfId', allDocs[0].id);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to fetch docs from Firestore", error);
+    }
+  };
+  
+  const handleUploadSuccess = async (newDoc: PDFDoc) => {
+    if (!user) return;
+    const docRef = doc(db, 'users', user.uid, 'docs', newDoc.id);
+    await setDoc(docRef, newDoc);
+
     const updatedDocs = [...docs, newDoc];
     setDocs(updatedDocs);
     setActiveDocId(newDoc.id);
-    localStorage.setItem('pdfDocs', JSON.stringify(updatedDocs));
     localStorage.setItem('activePdfId', newDoc.id);
   };
   
@@ -65,18 +84,44 @@ export default function ChatPage() {
     setActiveDocId(docId);
     localStorage.setItem('activePdfId', docId);
   };
-
-  const updateMessages = (docId: string, updater: (messages: Message[]) => Message[]) => {
+  
+  const updateMessages = async (docId: string, messages: Message[]) => {
+    if (!user) return;
+    const docRef = doc(db, 'users', user.uid, 'docs', docId);
+    await setDoc(docRef, { messages }, { merge: true });
+    
     const newDocs = docs.map(d => 
-      d.id === docId ? { ...d, messages: updater(d.messages) } : d
+      d.id === docId ? { ...d, messages } : d
     );
     setDocs(newDocs);
-    localStorage.setItem('pdfDocs', JSON.stringify(newDocs));
-  }
-  
+  };
+
+  const handleClearAllData = async () => {
+    if (!user) return;
+
+    setIsLoading(true);
+    try {
+        const docsCollectionRef = collection(db, 'users', user.uid, 'docs');
+        const querySnapshot = await getDocs(docsCollectionRef);
+        
+        const batch = writeBatch(db);
+        querySnapshot.forEach((doc) => {
+            batch.delete(doc.ref);
+        });
+        await batch.commit();
+
+        setDocs([]);
+        setActiveDocId(null);
+        localStorage.removeItem('activePdfId');
+    } catch (error) {
+        console.error("Error clearing all data: ", error);
+    }
+    setIsLoading(false);
+  };
+
   const activeDoc = docs.find(d => d.id === activeDocId);
 
-  if (isLoading) {
+  if (isLoading || !user) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-background">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -84,7 +129,7 @@ export default function ChatPage() {
     );
   }
 
-  if (docs.length === 0 || !activeDoc) {
+  if (docs.length === 0) {
     return (
       <div className="flex min-h-dvh w-full flex-col items-center justify-center bg-background p-4">
         <div className="w-full max-w-md">
@@ -101,6 +146,16 @@ export default function ChatPage() {
       </div>
     );
   }
+  
+  if (!activeDoc) {
+    // This can happen briefly when docs are loaded but activeDocId is not yet set.
+     return (
+      <div className="flex h-screen w-full items-center justify-center bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
 
   return (
     <div className="flex h-dvh w-full bg-card">
@@ -122,11 +177,16 @@ export default function ChatPage() {
             </Button>
           ))}
         </div>
+        <div className="mt-auto space-y-2 border-t pt-4">
          <UploadForm onUploadSuccess={handleUploadSuccess} existingDocs={docs}>
             <Button variant="outline" className="w-full justify-start">
               <Plus className="mr-2 h-4 w-4" /> Upload New PDF
             </Button>
          </UploadForm>
+          <Button variant="destructive" onClick={handleClearAllData} className="w-full justify-start">
+            <Trash2 className="mr-2 h-4 w-4" /> Clear All Data
+          </Button>
+        </div>
       </aside>
 
       <main className="flex-1 flex flex-col">
@@ -147,12 +207,10 @@ export default function ChatPage() {
               allDocs={docs}
               onSelectDoc={handleSelectDoc}
               onUploadSuccess={handleUploadSuccess}
-              onNewMessage={(message) => {
-                updateMessages(activeDoc.id, (messages) => [...messages, message]);
+              onNewMessages={(messages) => {
+                 updateMessages(activeDoc.id, messages);
               }}
-              onAIMessageComplete={(messages) => {
-                 updateMessages(activeDoc.id, () => messages);
-              }}
+              onClearAllData={handleClearAllData}
             />
           </ResizablePanel>
         </ResizablePanelGroup>

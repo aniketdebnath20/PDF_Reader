@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Bot, User, Send, Loader2, FileText, Menu, Trash2, Plus } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, FormEvent } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import type { PDFDoc, Message } from '@/app/chat/page';
@@ -17,8 +16,8 @@ interface ChatInterfaceProps {
   allDocs: PDFDoc[];
   onSelectDoc: (docId: string) => void;
   onUploadSuccess: (newDoc: PDFDoc) => void;
-  onNewMessage: (message: Message) => void;
-  onAIMessageComplete: (messages: Message[]) => void;
+  onNewMessages: (messages: Message[]) => void;
+  onClearAllData: () => void;
 }
 
 export default function ChatInterface({ 
@@ -26,10 +25,9 @@ export default function ChatInterface({
   allDocs,
   onSelectDoc,
   onUploadSuccess,
-  onNewMessage, 
-  onAIMessageComplete 
+  onNewMessages,
+  onClearAllData
 }: ChatInterfaceProps) {
-  const router = useRouter();
   const [messages, setMessages] = useState<Message[]>(doc.messages);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -52,9 +50,9 @@ export default function ChatInterface({
       };
       const updatedMessages = [initialMessage];
       setMessages(updatedMessages);
-      onAIMessageComplete(updatedMessages); // Persist the initial message
+      onNewMessages(updatedMessages); // Persist the initial message
     }
-  }, [doc, onAIMessageComplete]);
+  }, [doc, onNewMessages]);
 
 
   useEffect(() => {
@@ -66,12 +64,6 @@ export default function ChatInterface({
     }
   }, [messages]);
 
-  const handleClearChat = () => {
-    localStorage.removeItem('pdfDocs');
-    localStorage.removeItem('activePdfId');
-    router.push('/');
-  };
-
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!inputValue.trim() || isLoading || !doc.text) return;
@@ -82,11 +74,8 @@ export default function ChatInterface({
       text: inputValue,
     };
     
-    // This is an optimistic update. We show the user's message immediately.
-    onNewMessage(userMessage);
-
     const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
+    setMessages(newMessages); // Optimistic update
     setInputValue('');
     setIsLoading(true);
 
@@ -104,7 +93,7 @@ export default function ChatInterface({
       
       const finalMessages = [...newMessages, aiMessage];
       setMessages(finalMessages);
-      onAIMessageComplete(finalMessages);
+      onNewMessages(finalMessages);
 
     } catch (error) {
       console.error('Error with AI chat interface:', error);
@@ -115,12 +104,17 @@ export default function ChatInterface({
       };
       const finalMessages = [...newMessages, errorMessage];
       setMessages(finalMessages);
-      onAIMessageComplete(finalMessages);
+      onNewMessages(finalMessages);
     } finally {
       setIsLoading(false);
       inputRef.current?.focus();
     }
   };
+  
+  const handleMobileClearData = () => {
+      onClearAllData();
+      setIsSheetOpen(false);
+  }
 
   const handleMobileUploadSuccess = (newDoc: PDFDoc) => {
     onUploadSuccess(newDoc);
@@ -135,12 +129,11 @@ export default function ChatInterface({
   const SidebarContent = () => (
      <div className="w-full flex-col bg-card flex h-full">
          <SheetHeader className="p-4 border-b">
-           <SheetTitle>
+           <SheetTitle className="sr-only">Documents</SheetTitle>
             <Link href="/" className="flex items-center gap-2">
               <FileText className="h-6 w-6 text-primary" />
               <span className="font-headline text-xl">PDF Query</span>
             </Link>
-           </SheetTitle>
          </SheetHeader>
         <div className="flex-1 space-y-2 overflow-y-auto p-4">
            {allDocs.map(d => (
@@ -161,7 +154,7 @@ export default function ChatInterface({
                 <Plus className="mr-2 h-4 w-4" /> Upload New PDF
               </Button>
           </UploadForm>
-          <Button variant="destructive" onClick={handleClearChat} className="w-full justify-start">
+          <Button variant="destructive" onClick={handleMobileClearData} className="w-full justify-start">
             <Trash2 className="mr-2 h-4 w-4" /> Clear All Data
           </Button>
         </div>
